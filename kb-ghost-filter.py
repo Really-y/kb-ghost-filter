@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v4.2: 1a2c:95f6 matrix kisa-devre ghost filtresi.
-{SHIFT,X}->SHIFT  {CAPS,S}->CAPS (Caps Caps'tir, S duser)
-{E,TAB}: TAB iceren cift->TAB; {ALT,E}->ALT. {ESC,3}->SON GELEN.
-{CTRL,ALT}->CTRL (sade drop). WINDOW=60ms, SAMEKEY=15ms.
+"""kb-ghost-filter v5: 1a2c:95f6 matrix kisa-devre ghost filtresi.
+KANITLI kurallar (journal olcumu):
+- {SHIFT,X}->SHIFT, {CAPS,S}->CAPS, {CTRL,ALT}->CTRL (tek yonlu, sabit)
+- {E,TAB}/{ALT,E}/{ALT,TAB}: ILK GELEN kazanir (E-phys E-once, Tab-phys TAB-once);
+  Alt basiliysa TAB (Alt+Tab kombosu)
+- {ESC,3}: ILK GELEN kazanir
+WINDOW=25ms, SAMEKEY=15ms.
 """
 import asyncio, time
 from evdev import InputDevice, UInput, ecodes
@@ -20,8 +23,8 @@ GROUPS = [
     (frozenset((SHIFT, X)), SHIFT),
     (frozenset((CAPS, S)), CAPS),
     (frozenset((CTRL, ALT)), CTRL),
-    (CLUSTER, "TABFIRST"),
-    (frozenset((ESC, N3)), "LAST"),
+    (CLUSTER, "FIRST"),
+    (frozenset((ESC, N3)), "FIRST"),
 ]
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
 NAME = ecodes.KEY  # {kod:int -> isim:str}
@@ -52,7 +55,7 @@ async def run():
     src = InputDevice(find_src())
     print(f"[filter] kaynak: {src.path} ({src.name})", flush=True)
     ui = UInput.from_device(src, name="kb-ghost-filter")
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v4.2", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v5", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
@@ -99,12 +102,10 @@ async def run():
                 continue
             if mate is not None:
                 members, keep = group_of(mate, cn)
-                if keep == "TABFIRST":
-                    keeper = TAB if TAB in (mate, cn) else ALT
-                elif keep == "LAST":
-                    keeper = cn
+                if members == CLUSTER and ALT in held and TAB in (mate, cn):
+                    keeper = TAB  # Alt basili: Alt+Tab kombosu
                 elif keep == "FIRST":
-                    keeper = mate
+                    keeper = mate  # sira belirleyici: ilk gelen fiziksel kabul edilir
                 else:
                     keeper = keep
                 drop_other = cn if keeper != cn else mate
@@ -116,8 +117,7 @@ async def run():
                 ui.syn()
                 suppressed.add(drop_other)
                 last_ghost = {"ts": now, "members": members}
-                shown = keeper
-                print(f"[filter] GHOST {mate}+{cn} -> {shown}", flush=True)
+                print(f"[filter] GHOST {mate}+{cn} -> {keeper}", flush=True)
             else:
                 # bekleyen eskiler once verilir: sira korunur (once modifier, sonra harf)
                 for pcn in list(pending):
