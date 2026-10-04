@@ -8,7 +8,7 @@ import asyncio, time
 from evdev import InputDevice, UInput, ecodes
 
 SRC_ID = "usb-SEMICO_USB_Gaming_Keyboard-event-kbd"
-WINDOW = 0.060
+WINDOW = 0.025
 SAMEKEY = 0.015
 SHIFT, X = "KEY_LEFTSHIFT", "KEY_X"
 CAPS, S = "KEY_CAPSLOCK", "KEY_S"

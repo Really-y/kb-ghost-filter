@@ -29,10 +29,10 @@ disambiguated — last arrival wins. `{E,TAB}` assumes `E` alone never ghosts
 `kb-ghost-filter.py` grabs the physical device (`EVIOCGRAB`) and re-emits
 through a `uinput` device (`/dev/input/event*`, name `kb-ghost-filter`):
 
-- `WINDOW` (default 60 ms): a second `DOWN` inside the window on a known
+- `WINDOW` (default 25 ms): a second `DOWN` inside the window on a known
   ghost group is treated as one press; the keeper is emitted, the other
   dropped (including its `UP`). Real human combos are ≥150 ms apart
-  (measured), ghosts are ~0 ms. Tune down to ~25 ms if you want less latency;
+  (measured), ghosts are ~0 ms. Tuned down to ~25 ms after live testing with zero misses;
   USB polls every 10 ms, so don't go below ~20 ms.
 - Pending keys flush **before** the current key, preserving modifier→letter
   order (fast `Ctrl+C` stays correct).
