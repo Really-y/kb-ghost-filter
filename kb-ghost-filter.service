@@ -4,6 +4,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
+Nice=-10
 ExecStart=/usr/bin/python3 /usr/local/bin/kb-ghost-filter.py
 Restart=always
 RestartSec=2
