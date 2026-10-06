@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v10: 1a2c:95f6 matrix kisa-devre ghost filtresi.
+"""kb-ghost-filter v11: 1a2c:95f6 matrix kisa-devre ghost filtresi.
 
-v9 hatalari duzeltildi (kullanici dogruladi):
-1) CS cifti tablodan cikmistis -> Caps hayaleti gecip LED togluyordu (sS).
-   Cozum: {CAPS,S}->S sabit; CAPS tarafi bastirilir. CapsLock islevi:
-   Insert->CapsLock remap'i.
-2) Alt+Tab oluyordu: Alt basimi {CTRL,ALT} cifti atesliyor, CTRL kazaniyordu.
-   Cozum: CTRL/ALT cifti 300ms tamponlanir, emit YAPILMAZ; siradaki tusa bakilir:
-   - TAB/E gelirse -> kullanici ALT'ti -> ALT emit edilir, Alt+Tab calisir
-   - baska tus gelirse -> kullanici CTRL'di -> CTRL emit edilir (Ctrl+C calisir)
-   - 300ms bos gecerse -> CTRL emit (varsayilan, degisiklik yok)
-   - 300ms icinde UP gelirse -> tap, ikisi de dusurulur (sessiz)
+v10B + CANLI MOD GECISI: RightAlt + RightCtrl (her ikisi birlikte, 100ms icinde)
+basildiginda A <-> B modu calisma aninda degisir (restart gerekmez).
 
-Kurallar: {SHIFT,X}->SHIFT; {CAPS,S}->S; {E,TAB}->E (Alt basiliysa TAB);
-{ESC,3} sessiz->ESC/burst->3. REMAP: RightCtrl->Tab, Insert->CapsLock.
-WINDOW=25ms, SAMEKEY=8ms, GAP=400ms, POSTGHOST=8ms, CTRLALT=300ms.
+Mod A: E/S kazanir (yazim guvenli), Tab=RightCtrl, Caps=Insert
+Mod B: fiziksel Tab/Caps kazanir (yazimda e/s kacagi olabilir)
+
+Bunlar A/B'den bagimsiz ve hep ayni: {SHIFT,X}->SHIFT; {CTRL,ALT} tampon
+(Tab/E takip->ALT, baska->CTRL); {ESC,3} sessiz->ESC/burst->3; Alt basiliyken
+E+TAB->TAB (Alt+Tab). WINDOW=25ms, SAMEKEY=8ms, GAP=400ms, POSTGHOST=8ms.
 """
 import asyncio, time
 from evdev import InputDevice, UInput, ecodes
@@ -25,6 +20,7 @@ SAMEKEY = 0.008
 GAP = 0.400
 POSTGHOST = 0.008
 CTRLALT = 0.300
+TOGGLE_WIN = 0.100
 SHIFT, X = "KEY_LEFTSHIFT", "KEY_X"
 CAPS, S = "KEY_CAPSLOCK", "KEY_S"
 CTRL, ALT = "KEY_LEFTCTRL", "KEY_LEFTALT"
@@ -34,18 +30,17 @@ CLUSTER = frozenset((ALT, E, TAB))
 CA = frozenset((CTRL, ALT))
 CS = frozenset((CAPS, S))
 EN = frozenset((ESC, N3))
-MODE = "B"  # "A": yazim onceligi (E/S kazanir, Tab/Caps olu)
-            # "B": fiziksel Tab/Caps kazanir (yazimda e/s kacagi olabilir)
+MODE = "A"  # baslangic modu; canli toggle bunu degistirir
 GROUPS = [
     (frozenset((SHIFT, X)), SHIFT),
     (CA, "CA"),
-    (CS, CAPS if MODE == "B" else S),
-    (CLUSTER, "TABFIRST" if MODE == "B" else "FIRST"),
+    (CS, "MODECS"),
+    (CLUSTER, "MODECL"),
     (EN, "CTX"),
 ]
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
 NAME = ecodes.KEY  # {kod:int -> isim:str}
-REMAP = {  # temiz olculmus yedek tuslar
+REMAP = {  # Mod A yedekleri (Mod B'de de zararsiz)
     ecodes.KEY_RIGHTCTRL: ecodes.KEY_TAB,
     ecodes.KEY_INSERT: ecodes.KEY_CAPSLOCK,
 }
@@ -56,6 +51,16 @@ def group_of(a, b):
         if a in members and b in members:
             return members, keep
     return None
+
+def decide(keep, mode, mate, cn):
+    """Saf karar fonksiyonu (birim test edilir)."""
+    if keep == "MODECS":
+        return CAPS if mode == "B" else S
+    if keep == "MODECL":
+        return TAB if mode == "B" else mate
+    if keep == "FIRST":
+        return mate
+    return keep
 
 def find_src():
     try:
@@ -77,8 +82,9 @@ async def run():
     src = InputDevice(find_src())
     print(f"[filter] kaynak: {src.path} ({src.name})", flush=True)
     ui = UInput.from_device(src, name="kb-ghost-filter")
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v10", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v11 mod={MODE}", flush=True)
     src.grab()
+    mode = MODE
     pending = {}
     suppressed = set()
     held = set()
@@ -88,6 +94,7 @@ async def run():
     last_ghost = {"ts": 0.0, "members": frozenset()}
     post_ts = 0.0
     cabuf = None
+    toggle = {"rctrl": 0.0, "ralt": 0.0}
 
     def w(code, value):
         code = REMAP.get(code, code)
@@ -115,7 +122,7 @@ async def run():
             await asyncio.sleep(60)
             now = time.time()
             stuck = [f"{c}({int(now-t)}sn)" for c, t in held_ts.items() if now - t > 120]
-            print(f"[hb] in={STATS['in']} out={STATS['out']} ghost={STATS['ghost']} "
+            print(f"[hb] mod={mode} in={STATS['in']} out={STATS['out']} ghost={STATS['ghost']} "
                   f"bounce={STATS['bounce']} g3={STATS['g3']} uzun-basililar={stuck}", flush=True)
 
     async def ca_timeout(buf):
@@ -130,7 +137,7 @@ async def run():
             print(f"[filter] CTRLALT zaman asimi -> CTRL", flush=True)
 
     async def main_loop():
-        nonlocal last_ghost, post_ts, cabuf
+        nonlocal last_ghost, post_ts, cabuf, mode
         async for ev in src.async_read_loop():
             if ev.type != ecodes.EV_KEY:
                 if ev.type != ecodes.EV_SYN:
@@ -143,6 +150,17 @@ async def run():
             STATS["in"] += 1
             act[cn] = now
             if ev.value == 1:  # DOWN
+                # --- CANLI MOD GECISI: RightAlt + RightCtrl birlikte ---
+                if cn in ("KEY_RIGHTCTRL", "KEY_RIGHTALT"):
+                    k = "rctrl" if cn == "KEY_RIGHTCTRL" else "ralt"
+                    other = "ralt" if k == "rctrl" else "rctrl"
+                    toggle[k] = now
+                    if now - toggle[other] < TOGGLE_WIN:
+                        mode = "B" if mode == "A" else "A"
+                        suppressed.add("KEY_RIGHTCTRL")
+                        suppressed.add("KEY_RIGHTALT")
+                        print(f"[filter] MODE GECISI -> {mode}", flush=True)
+                        continue
                 if cn in suppressed:
                     continue
                 if now - last_up.get(cn, 0) < SAMEKEY:
@@ -158,7 +176,7 @@ async def run():
                     if cn == TAB or cn == E:
                         w(b["alt"].code, 1)   # kullanici ALT'ti -> Alt+Tab
                         hold_add(ALT, b["alt"])
-                        suppressed.add(CTRL)   # CTRL hic emit edilmedi -> UP'sunu ye
+                        suppressed.add(CTRL)
                         ui.syn()
                         print(f"[filter] CTRLALT -> ALT (Tab/ E takip)", flush=True)
                     else:
@@ -205,14 +223,10 @@ async def run():
                     quiet = (pending[mate]["ts"] - (max(others) if others else -9999.0)) > GAP
                     if members == CLUSTER and ALT in held and TAB in (mate, cn):
                         keeper = TAB   # Alt basili: Alt+Tab
-                    elif keep == "TABFIRST":
-                        keeper = TAB if TAB in (mate, cn) else ALT
                     elif members == EN:
                         keeper = ESC if quiet else N3
-                    elif keep == "FIRST":
-                        keeper = mate  # E kazanir
                     else:
-                        keeper = keep  # SHIFT / S / CAPS sabit
+                        keeper = decide(keep, mode, mate, cn)
                     drop_other = cn if keeper != cn else mate
                     pend = pending.pop(mate)
                     pend["task"].cancel()
