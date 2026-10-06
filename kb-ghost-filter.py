@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v8: sira-belirleyici keepers (E/TAB, S/CAPS, CTRL: FIRST);
-SHIFT sabit; EN sessiz->ESC/burst->3; Alt-held TAB; Alt-hold 300ms; LED kapatma.
-v7 + CapsLock LED durumu: CS ciftinde LED aciksa kapatma niyeti (CAPS).
-v6'dan farklar:
-- sessizlik, ciftin kendi tuslari HARIC tutularak olculur (hizli art arda
-  basislarda kendi aktiviten kirletmez; Tab-Tab, Caps-Caps duzelir)
-- SAMEKEY 15->8ms (hizli ayni-tus cift vuruslar yenmez)
-Kurallar: SHIFT sabit; CTRL FIRST; CS/EN/CLUSTER baglam (sessiz->tap, burst->harf);
-Alt basili+TAB->TAB; POSTGHOST 8ms uclu guard. WINDOW=25ms, GAP=400ms.
+"""kb-ghost-filter v9: 1a2c:95f6 matrix kisa-devre ghost filtresi. SON SURUM.
+
+Fiziksel gercek (8 surum boyunca olculdu): ayni cift farkli fiziksel tuslardan,
+degişken sırada geliyor. Yazilim iki ayrı tusu ayiramaz -> hangi kazanacaksa
+SABIT secilir. Bu surumde:
+- Yazim oncelikli: E her zaman E, S her zaman S (Tab/Caps fiziksel tuslari olu)
+- Alt+Tab gercek Alt+Tab tusuyla calisir (Alt basiliyken TAB korunur)
+- ESC: yalniz basimda ESC, rakam akisinda 3 (per-key sessizlik kurali)
+- SHIFT/X -> SHIFT, CTRL/ALT -> CTRL (+Alt-basili-tutma 300ms, 5sn otomatik birak)
+- YEDEK REMAP: RightCtrl -> Tab, Insert -> CapsLock (ikisi de temiz olculdu)
+
+WINDOW=25ms, SAMEKEY=8ms, GAP=400ms (sadece ESC/3), POSTGHOST=8ms.
 """
 import asyncio, time
 from evdev import InputDevice, UInput, ecodes
@@ -25,46 +28,20 @@ CTRL, ALT = "KEY_LEFTCTRL", "KEY_LEFTALT"
 E, TAB = "KEY_E", "KEY_TAB"
 ESC, N3 = "KEY_ESC", "KEY_3"
 CLUSTER = frozenset((ALT, E, TAB))
-CS = frozenset((CAPS, S))
 EN = frozenset((ESC, N3))
 GROUPS = [
     (frozenset((SHIFT, X)), SHIFT),
-    (frozenset((CTRL, ALT)), "FIRST"),
-    (CS, "FIRST"),
+    (frozenset((CTRL, ALT)), CTRL),
     (CLUSTER, "FIRST"),
     (EN, "CTX"),
 ]
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
 NAME = ecodes.KEY  # {kod:int -> isim:str}
+REMAP = {  # temiz olculmus yedek tuslar -> olmus tuslarin islevi
+    ecodes.KEY_RIGHTCTRL: ecodes.KEY_TAB,
+    ecodes.KEY_INSERT: ecodes.KEY_CAPSLOCK,
+}
 STATS = {"in": 0, "out": 0, "ghost": 0, "bounce": 0, "g3": 0}
-CAPS_LED = None  # v7.1: sanal cihaz capslock LED yolu (run basinda cozulur)
-
-def find_caps_led():
-    """Sanal klavyenin capslock LED sysfs yolu (X'in gercek CapsLock durumu)."""
-    try:
-        import os
-        import re
-        with open("/proc/bus/input/devices") as fh:
-            txt = fh.read()
-        for blk in txt.split("\n\n"):
-            if 'Name="kb-ghost-filter"' in blk:
-                m = re.search(r"Sysfs=(.*)", blk)
-                if m:
-                    nn = m.group(1).strip().split("/")[-1]
-                    p = f"/sys/class/leds/{nn}::capslock/brightness"
-                    if os.path.exists(p):
-                        return p
-    except Exception:
-        pass
-    return None
-
-def caps_on():
-    try:
-        if CAPS_LED and open(CAPS_LED).read().strip() == "1":
-            return True
-    except Exception:
-        pass
-    return False
 
 def group_of(a, b):
     for members, keep in GROUPS:
@@ -92,21 +69,20 @@ async def run():
     src = InputDevice(find_src())
     print(f"[filter] kaynak: {src.path} ({src.name})", flush=True)
     ui = UInput.from_device(src, name="kb-ghost-filter")
-    global CAPS_LED
-    CAPS_LED = find_caps_led()
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v8 led={CAPS_LED}", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v9", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
     held = set()
     held_ts = {}
     last_up = {}
+    act = {}
     last_ghost = {"ts": 0.0, "members": frozenset()}
     post_ts = 0.0
-    act = {}
     altbuf = None
 
     def w(code, value):
+        code = REMAP.get(code, code)  # yedek remap: RightCtrl->Tab, Insert->Caps
         ui.write(ecodes.EV_KEY, code, value)
         STATS["out"] += 1
 
@@ -176,7 +152,7 @@ async def run():
                     print(f"[filter] BOUNCE {cn} dusuruldu", flush=True)
                     continue
                 if cn in pending:
-                    continue  # bounce: bekleyen DOWN varken ayni tusun 2. DOWN'u
+                    continue
                 mate = None
                 for pcn in list(pending):
                     if group_of(pcn, cn):
@@ -197,13 +173,11 @@ async def run():
                     others = [ts for k, ts in act.items() if k not in members]
                     quiet = (pending[mate]["ts"] - (max(others) if others else -9999.0)) > GAP
                     if members == CLUSTER and ALT in held and TAB in (mate, cn):
-                        keeper = TAB  # Alt basili: Alt+Tab kombosu
-                    elif members == CS and caps_on():
-                        keeper = CAPS  # CapsLock acik: kapatma niyeti
-                    elif keep == "FIRST":
-                        keeper = mate  # sira belirleyici: ilk gelen fiziksel
+                        keeper = TAB   # Alt basili: gercek Alt+Tab kombinasyonu
                     elif members == EN:
                         keeper = ESC if quiet else N3
+                    elif keep == "FIRST":
+                        keeper = mate  # E her zaman E kazanir (Tab fiziksel olu)
                     else:
                         keeper = keep  # SHIFT sabit
                     drop_other = cn if keeper != cn else mate
@@ -227,9 +201,8 @@ async def run():
                     last_ghost = {"ts": now, "members": members}
                     post_ts = now
                     STATS["ghost"] += 1
-                    print(f"[filter] GHOST {mate}+{cn} -> {keeper} {'(sessiz)' if quiet else '(burst)'}", flush=True)
+                    print(f"[filter] GHOST {mate}+{cn} -> {keeper}", flush=True)
                 else:
-                    # bekleyen eskiler once verilir: sira korunur (once modifier, sonra harf)
                     for pcn in list(pending):
                         p = pending.pop(pcn)
                         p["task"].cancel()
@@ -244,6 +217,7 @@ async def run():
                         ui.syn()
             elif ev.value == 0:  # UP
                 last_up[cn] = now
+                act[cn] = now
                 if cn == ALT and altbuf is not None and not altbuf.get("emitted", False):
                     b = altbuf
                     altbuf = None
