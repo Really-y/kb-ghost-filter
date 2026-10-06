@@ -34,11 +34,13 @@ CLUSTER = frozenset((ALT, E, TAB))
 CA = frozenset((CTRL, ALT))
 CS = frozenset((CAPS, S))
 EN = frozenset((ESC, N3))
+MODE = "B"  # "A": yazim onceligi (E/S kazanir, Tab/Caps olu)
+            # "B": fiziksel Tab/Caps kazanir (yazimda e/s kacagi olabilir)
 GROUPS = [
     (frozenset((SHIFT, X)), SHIFT),
     (CA, "CA"),
-    (CS, S),
-    (CLUSTER, "FIRST"),
+    (CS, CAPS if MODE == "B" else S),
+    (CLUSTER, "TABFIRST" if MODE == "B" else "FIRST"),
     (EN, "CTX"),
 ]
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
@@ -203,12 +205,14 @@ async def run():
                     quiet = (pending[mate]["ts"] - (max(others) if others else -9999.0)) > GAP
                     if members == CLUSTER and ALT in held and TAB in (mate, cn):
                         keeper = TAB   # Alt basili: Alt+Tab
+                    elif keep == "TABFIRST":
+                        keeper = TAB if TAB in (mate, cn) else ALT
                     elif members == EN:
                         keeper = ESC if quiet else N3
                     elif keep == "FIRST":
                         keeper = mate  # E kazanir
                     else:
-                        keeper = keep  # SHIFT / S sabit
+                        keeper = keep  # SHIFT / S / CAPS sabit
                     drop_other = cn if keeper != cn else mate
                     pend = pending.pop(mate)
                     pend["task"].cancel()
