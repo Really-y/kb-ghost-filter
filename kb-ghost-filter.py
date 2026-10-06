@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v5.1: 1a2c:95f6 matrix kisa-devre ghost filtresi.
-Kurallar v5 ile ayni (SHIFT/CAPS/CTRL sabit; E-TAB/ESC-3 FIRST; Alt-held TAB).
-Ek: periyodik saglik/anomali gunlugu (hb + watch + sayaclar).
-WINDOW=25ms, SAMEKEY=15ms.
+"""kb-ghost-filter v6: 1a2c:95f6 matrix kisa-devre ghost filtresi.
+v5'ten fark: ariza KAYIYOR (olcum: S ghost'lanmaya basladi, ESC sirasi dondu,
+Caps ucluye evrildi). Sabit keeper yerine baglam kurali:
+- {SHIFT,X}->SHIFT (sabit; X hic ghost'lanmadi)
+- {CTRL,ALT}->FIRST (Ctrl-first stabil)
+- {CAPS,S}: sessizse CAPS, burst'teyse S
+- {E,TAB}/{ALT,E}/{ALT,TAB}: Alt basiliysa TAB; sessizse TAB/ALT, burst'teyse E
+- {ESC,3}: sessizse ESC, burst'teyse 3
+- POSTGHOST 8ms: ghost cozumu sonrasi watched DOWN = uclu ghost, duser
+sessiz = ciftin ilk DOWN'undan once 400ms sessizlik.
+WINDOW=25ms, SAMEKEY=15ms, GAP=400ms.
 """
 import asyncio, time
 from evdev import InputDevice, UInput, ecodes
@@ -10,18 +17,22 @@ from evdev import InputDevice, UInput, ecodes
 SRC_ID = "usb-SEMICO_USB_Gaming_Keyboard-event-kbd"
 WINDOW = 0.025
 SAMEKEY = 0.015
+GAP = 0.400
+POSTGHOST = 0.008
 SHIFT, X = "KEY_LEFTSHIFT", "KEY_X"
 CAPS, S = "KEY_CAPSLOCK", "KEY_S"
 CTRL, ALT = "KEY_LEFTCTRL", "KEY_LEFTALT"
 E, TAB = "KEY_E", "KEY_TAB"
 ESC, N3 = "KEY_ESC", "KEY_3"
 CLUSTER = frozenset((ALT, E, TAB))
+CS = frozenset((CAPS, S))
+EN = frozenset((ESC, N3))
 GROUPS = [
     (frozenset((SHIFT, X)), SHIFT),
-    (frozenset((CAPS, S)), CAPS),
-    (frozenset((CTRL, ALT)), CTRL),
-    (CLUSTER, "FIRST"),
-    (frozenset((ESC, N3)), "FIRST"),
+    (frozenset((CTRL, ALT)), "FIRST"),
+    (CS, "CTX"),
+    (CLUSTER, "CTX"),
+    (EN, "CTX"),
 ]
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
 NAME = ecodes.KEY  # {kod:int -> isim:str}
@@ -53,7 +64,7 @@ async def run():
     src = InputDevice(find_src())
     print(f"[filter] kaynak: {src.path} ({src.name})", flush=True)
     ui = UInput.from_device(src, name="kb-ghost-filter")
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v5.1", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v6", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
@@ -61,6 +72,8 @@ async def run():
     held_ts = {}
     last_up = {}
     last_ghost = {"ts": 0.0, "members": frozenset()}
+    last_act = 0.0
+    post_ts = 0.0
 
     def w(code, value):
         ui.write(ecodes.EV_KEY, code, value)
@@ -75,11 +88,13 @@ async def run():
         held_ts.pop(cn, None)
 
     async def flush_later(cn, ev):
+        nonlocal last_act
         await asyncio.sleep(WINDOW)
         if cn in pending:
             del pending[cn]
             w(ev.code, ev.value)
             hold_add(cn, ev)
+            last_act = time.time()
             ui.syn()
 
     async def heartbeat():
@@ -91,6 +106,7 @@ async def run():
                   f"bounce={STATS['bounce']} g3={STATS['g3']} uzun-basililar={stuck}", flush=True)
 
     async def main_loop():
+        nonlocal last_ghost, last_act, post_ts
         async for ev in src.async_read_loop():
             if ev.type != ecodes.EV_KEY:
                 if ev.type != ecodes.EV_SYN:
@@ -117,15 +133,32 @@ async def run():
                         break
                 if mate is None and cn in WATCHED and (now - last_ghost["ts"]) < WINDOW and cn in last_ghost["members"]:
                     suppressed.add(cn)
+                    last_act = now
                     STATS["g3"] += 1
                     print(f"[filter] GHOST-3 {cn} dusuruldu", flush=True)
                     continue
+                if mate is None and cn in WATCHED and (now - post_ts) < POSTGHOST:
+                    suppressed.add(cn)
+                    last_act = now
+                    STATS["g3"] += 1
+                    print(f"[filter] GHOST-POST {cn} dusuruldu", flush=True)
+                    continue
                 if mate is not None:
                     members, keep = group_of(mate, cn)
+                    quiet = (pending[mate]["ts"] - last_act) > GAP
                     if members == CLUSTER and ALT in held and TAB in (mate, cn):
                         keeper = TAB  # Alt basili: Alt+Tab kombosu
+                    elif members == CLUSTER:
+                        if TAB in (mate, cn):
+                            keeper = TAB if quiet else E
+                        else:
+                            keeper = ALT if quiet else E
+                    elif members == CS:
+                        keeper = CAPS if quiet else S
+                    elif members == EN:
+                        keeper = ESC if quiet else N3
                     elif keep == "FIRST":
-                        keeper = mate  # sira belirleyici: ilk gelen fiziksel kabul edilir
+                        keeper = mate
                     else:
                         keeper = keep
                     drop_other = cn if keeper != cn else mate
@@ -137,8 +170,10 @@ async def run():
                     ui.syn()
                     suppressed.add(drop_other)
                     last_ghost = {"ts": now, "members": members}
+                    post_ts = now
+                    last_act = now
                     STATS["ghost"] += 1
-                    print(f"[filter] GHOST {mate}+{cn} -> {keeper}", flush=True)
+                    print(f"[filter] GHOST {mate}+{cn} -> {keeper} {'(sessiz)' if quiet else '(burst)'}", flush=True)
                 else:
                     # bekleyen eskiler once verilir: sira korunur (once modifier, sonra harf)
                     for pcn in list(pending):
@@ -153,8 +188,10 @@ async def run():
                         w(ev.code, ev.value)
                         hold_add(cn, ev)
                         ui.syn()
+                        last_act = now
             elif ev.value == 0:  # UP
                 last_up[cn] = now
+                last_act = now
                 if cn in pending:
                     p = pending.pop(cn)
                     p["task"].cancel()
