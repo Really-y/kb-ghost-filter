@@ -1,0 +1,12 @@
+#!/bin/bash
+# kb-mode: A = yazim onceligi (E/S guvenli, Tab=RightCtrl, Caps=Insert)
+#          B = fiziksel Tab/Caps kazanir (yazimda e/s kacagi olabilir)
+M="${1:-}"
+if [ "$M" != "A" ] && [ "$M" != "B" ]; then
+  echo "kullanim: sudo kb-mode A|B   (su an: $(grep -m1 '^MODE' /usr/local/bin/kb-ghost-filter.py | grep -o '"[AB]"'))"
+  exit 1
+fi
+sudo sed -i "s/^MODE = .*/MODE = \"$M\"/" /usr/local/bin/kb-ghost-filter.py
+sudo systemctl restart kb-ghost-filter
+sleep 1
+echo "Mod $M aktif: $(systemctl is-active kb-ghost-filter)"
