@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v6: 1a2c:95f6 matrix kisa-devre ghost filtresi.
-v5'ten fark: ariza KAYIYOR (olcum: S ghost'lanmaya basladi, ESC sirasi dondu,
-Caps ucluye evrildi). Sabit keeper yerine baglam kurali:
-- {SHIFT,X}->SHIFT (sabit; X hic ghost'lanmadi)
-- {CTRL,ALT}->FIRST (Ctrl-first stabil)
-- {CAPS,S}: sessizse CAPS, burst'teyse S
-- {E,TAB}/{ALT,E}/{ALT,TAB}: Alt basiliysa TAB; sessizse TAB/ALT, burst'teyse E
-- {ESC,3}: sessizse ESC, burst'teyse 3
-- POSTGHOST 8ms: ghost cozumu sonrasi watched DOWN = uclu ghost, duser
-sessiz = ciftin ilk DOWN'undan once 400ms sessizlik.
-WINDOW=25ms, SAMEKEY=15ms, GAP=400ms.
+"""kb-ghost-filter v7: 1a2c:95f6 matrix kisa-devre ghost filtresi.
+v6'dan farklar:
+- sessizlik, ciftin kendi tuslari HARIC tutularak olculur (hizli art arda
+  basislarda kendi aktiviten kirletmez; Tab-Tab, Caps-Caps duzelir)
+- SAMEKEY 15->8ms (hizli ayni-tus cift vuruslar yenmez)
+Kurallar: SHIFT sabit; CTRL FIRST; CS/EN/CLUSTER baglam (sessiz->tap, burst->harf);
+Alt basili+TAB->TAB; POSTGHOST 8ms uclu guard. WINDOW=25ms, GAP=400ms.
 """
 import asyncio, time
 from evdev import InputDevice, UInput, ecodes
 
 SRC_ID = "usb-SEMICO_USB_Gaming_Keyboard-event-kbd"
 WINDOW = 0.025
-SAMEKEY = 0.015
+SAMEKEY = 0.008
 GAP = 0.400
 POSTGHOST = 0.008
 SHIFT, X = "KEY_LEFTSHIFT", "KEY_X"
@@ -64,7 +60,7 @@ async def run():
     src = InputDevice(find_src())
     print(f"[filter] kaynak: {src.path} ({src.name})", flush=True)
     ui = UInput.from_device(src, name="kb-ghost-filter")
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v6", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v7", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
@@ -72,8 +68,8 @@ async def run():
     held_ts = {}
     last_up = {}
     last_ghost = {"ts": 0.0, "members": frozenset()}
-    last_act = 0.0
     post_ts = 0.0
+    act = {}
 
     def w(code, value):
         ui.write(ecodes.EV_KEY, code, value)
@@ -88,13 +84,11 @@ async def run():
         held_ts.pop(cn, None)
 
     async def flush_later(cn, ev):
-        nonlocal last_act
         await asyncio.sleep(WINDOW)
         if cn in pending:
             del pending[cn]
             w(ev.code, ev.value)
             hold_add(cn, ev)
-            last_act = time.time()
             ui.syn()
 
     async def heartbeat():
@@ -106,7 +100,7 @@ async def run():
                   f"bounce={STATS['bounce']} g3={STATS['g3']} uzun-basililar={stuck}", flush=True)
 
     async def main_loop():
-        nonlocal last_ghost, last_act, post_ts
+        nonlocal last_ghost, post_ts
         async for ev in src.async_read_loop():
             if ev.type != ecodes.EV_KEY:
                 if ev.type != ecodes.EV_SYN:
@@ -117,6 +111,7 @@ async def run():
             cn = NAME.get(ev.code, str(ev.code))
             now = time.time()
             STATS["in"] += 1
+            act[cn] = now
             if ev.value == 1:  # DOWN
                 if cn in suppressed:
                     continue
@@ -133,19 +128,18 @@ async def run():
                         break
                 if mate is None and cn in WATCHED and (now - last_ghost["ts"]) < WINDOW and cn in last_ghost["members"]:
                     suppressed.add(cn)
-                    last_act = now
                     STATS["g3"] += 1
                     print(f"[filter] GHOST-3 {cn} dusuruldu", flush=True)
                     continue
                 if mate is None and cn in WATCHED and (now - post_ts) < POSTGHOST:
                     suppressed.add(cn)
-                    last_act = now
                     STATS["g3"] += 1
                     print(f"[filter] GHOST-POST {cn} dusuruldu", flush=True)
                     continue
                 if mate is not None:
                     members, keep = group_of(mate, cn)
-                    quiet = (pending[mate]["ts"] - last_act) > GAP
+                    others = [ts for k, ts in act.items() if k not in members]
+                    quiet = (pending[mate]["ts"] - (max(others) if others else -9999.0)) > GAP
                     if members == CLUSTER and ALT in held and TAB in (mate, cn):
                         keeper = TAB  # Alt basili: Alt+Tab kombosu
                     elif members == CLUSTER:
@@ -171,7 +165,6 @@ async def run():
                     suppressed.add(drop_other)
                     last_ghost = {"ts": now, "members": members}
                     post_ts = now
-                    last_act = now
                     STATS["ghost"] += 1
                     print(f"[filter] GHOST {mate}+{cn} -> {keeper} {'(sessiz)' if quiet else '(burst)'}", flush=True)
                 else:
@@ -188,10 +181,8 @@ async def run():
                         w(ev.code, ev.value)
                         hold_add(cn, ev)
                         ui.syn()
-                        last_act = now
             elif ev.value == 0:  # UP
                 last_up[cn] = now
-                last_act = now
                 if cn in pending:
                     p = pending.pop(cn)
                     p["task"].cancel()
