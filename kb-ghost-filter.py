@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v7.1: 1a2c:95f6 matrix kisa-devre ghost filtresi.
+"""kb-ghost-filter v7.2: Alt-basili-tutma (300ms) + 5sn otomatik birakma.
 v7 + CapsLock LED durumu: CS ciftinde LED aciksa kapatma niyeti (CAPS).
 v6'dan farklar:
 - sessizlik, ciftin kendi tuslari HARIC tutularak olculur (hizli art arda
@@ -16,6 +16,8 @@ WINDOW = 0.025
 SAMEKEY = 0.008
 GAP = 0.400
 POSTGHOST = 0.008
+HOLDALT = 0.300
+IDLEALT = 5.0
 SHIFT, X = "KEY_LEFTSHIFT", "KEY_X"
 CAPS, S = "KEY_CAPSLOCK", "KEY_S"
 CTRL, ALT = "KEY_LEFTCTRL", "KEY_LEFTALT"
@@ -91,7 +93,7 @@ async def run():
     ui = UInput.from_device(src, name="kb-ghost-filter")
     global CAPS_LED
     CAPS_LED = find_caps_led()
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v7.1 led={CAPS_LED}", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v7.2 led={CAPS_LED}", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
@@ -101,6 +103,7 @@ async def run():
     last_ghost = {"ts": 0.0, "members": frozenset()}
     post_ts = 0.0
     act = {}
+    altbuf = None
 
     def w(code, value):
         ui.write(ecodes.EV_KEY, code, value)
@@ -130,8 +133,29 @@ async def run():
             print(f"[hb] in={STATS['in']} out={STATS['out']} ghost={STATS['ghost']} "
                   f"bounce={STATS['bounce']} g3={STATS['g3']} uzun-basililar={stuck}", flush=True)
 
+    async def alt_hold_timer(buf):
+        nonlocal altbuf
+        await asyncio.sleep(HOLDALT)
+        if altbuf is buf:
+            altbuf = None
+            w(buf["ev"].code, 1)
+            hold_add(ALT, buf["ev"])
+            ui.syn()
+            buf["emitted"] = True
+            buf["in0"] = STATS["in"]
+            buf["idle"] = asyncio.create_task(alt_idle_watch(buf))
+            print(f"[filter] GHOST ALT basili-tutma -> ALT iade", flush=True)
+
+    async def alt_idle_watch(buf):
+        await asyncio.sleep(IDLEALT)
+        if ALT in held and STATS["in"] == buf.get("in0", -1):
+            w(ecodes.KEY_LEFTALT, 0)
+            hold_drop(ALT)
+            ui.syn()
+            print(f"[filter] WATCH ALT 5sn sessiz -> otomatik birakma", flush=True)
+
     async def main_loop():
-        nonlocal last_ghost, post_ts
+        nonlocal last_ghost, post_ts, altbuf
         async for ev in src.async_read_loop():
             if ev.type != ecodes.EV_KEY:
                 if ev.type != ecodes.EV_SYN:
@@ -196,7 +220,17 @@ async def run():
                     w(kev.code, 1)
                     hold_add(keeper, kev if keeper == mate else ev)
                     ui.syn()
-                    suppressed.add(drop_other)
+                    if drop_other == ALT:
+                        if altbuf is not None:
+                            try:
+                                altbuf["task"].cancel()
+                            except Exception:
+                                pass
+                        b = {"ev": ev if cn == ALT else pend["ev"], "task": None, "emitted": False}
+                        b["task"] = asyncio.create_task(alt_hold_timer(b))
+                        altbuf = b
+                    else:
+                        suppressed.add(drop_other)
                     last_ghost = {"ts": now, "members": members}
                     post_ts = now
                     STATS["ghost"] += 1
@@ -217,6 +251,12 @@ async def run():
                         ui.syn()
             elif ev.value == 0:  # UP
                 last_up[cn] = now
+                if cn == ALT and altbuf is not None and not altbuf.get("emitted", False):
+                    b = altbuf
+                    altbuf = None
+                    b["task"].cancel()
+                    print(f"[filter] GHOST ALT tap, ALT dustu", flush=True)
+                    continue
                 if cn in pending:
                     p = pending.pop(cn)
                     p["task"].cancel()

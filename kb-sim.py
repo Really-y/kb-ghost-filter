@@ -10,7 +10,7 @@ def simulate(name, seq, caps_led=False):
     W, SK, GAP, PG = f.WINDOW * 1000, f.SAMEKEY * 1000, f.GAP * 1000, f.POSTGHOST * 1000
     pending, suppressed, held, last_up = {}, set(), set(), {}
     last_ghost = {"ts": -9999, "members": frozenset()}
-    post_ts, act = -9999, {}
+    post_ts, act, altbuf = -9999, {}, None
     out = []
     def expire(t):
         for p, pt in list(pending.items()):
@@ -18,8 +18,15 @@ def simulate(name, seq, caps_led=False):
                 del pending[p]
                 out.append((t, p, 1))
                 held.add(p)
+    def alt_timer(t):
+        nonlocal altbuf
+        if altbuf and not altbuf.get("emitted") and t - altbuf["t0"] >= 300:
+            altbuf["emitted"] = True
+            out.append((t, f.ALT, 1))
+            held.add(f.ALT)
     for t, cn, v in seq:
         expire(t)
+        alt_timer(t)
         if v == 1:
             act[cn] = t
             if cn in suppressed:
@@ -57,7 +64,10 @@ def simulate(name, seq, caps_led=False):
                 drop = cn if keeper != cn else mate
                 del pending[mate]
                 out.append((t, keeper, 1))
-                suppressed.add(drop)
+                if drop == f.ALT:
+                    altbuf = {"t0": t}
+                else:
+                    suppressed.add(drop)
                 last_ghost = {"ts": t, "members": members}
                 post_ts = t
             else:
@@ -73,6 +83,10 @@ def simulate(name, seq, caps_led=False):
         else:
             last_up[cn] = t
             act[cn] = t
+            if cn == f.ALT and altbuf and not altbuf.get("emitted"):
+                altbuf = None
+                out.append((t, f"{cn}(tap-dustu)", v))
+                continue
             if cn in pending:
                 del pending[cn]
                 out.append((t, cn, 1))
@@ -102,3 +116,5 @@ simulate("T14 Tab x2, 2sn once sohbet var", [(100000, A, 1), (100060, A, 0), (10
 simulate("T15 E burst (harf yakin)", [(200000, A, 1), (200060, A, 0), (200150, E, 1), (200150, TB, 1), (200250, E, 0), (200250, TB, 0)])
 simulate("S13 Caps, LED acik + burst", [(30000, A, 1), (30060, A, 0), (30150, SS, 1), (30150, C, 1), (30250, SS, 0), (30250, C, 0)], caps_led=True)
 simulate("S14 S burst, LED kapali", [(31000, A, 1), (31060, A, 0), (31150, SS, 1), (31150, C, 1), (31250, SS, 0), (31250, C, 0)], caps_led=False)
+simulate("T16 Alt tap (UP 100ms)", [(50000, CL, 1), (50000, AL, 1), (50100, CL, 0), (50100, AL, 0)])
+simulate("T17 Alt hold (UP 600ms)", [(51000, CL, 1), (51000, AL, 1), (51600, CL, 0), (51600, AL, 0)])
