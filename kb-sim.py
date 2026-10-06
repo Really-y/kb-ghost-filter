@@ -5,7 +5,8 @@ spec = importlib.util.spec_from_file_location("flt", "/tmp/kb-ghost-filter-v7.py
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 
-def simulate(name, seq):
+def simulate(name, seq, caps_led=False):
+    f.caps_on = lambda: caps_led
     W, SK, GAP, PG = f.WINDOW * 1000, f.SAMEKEY * 1000, f.GAP * 1000, f.POSTGHOST * 1000
     pending, suppressed, held, last_up = {}, set(), set(), {}
     last_ghost = {"ts": -9999, "members": frozenset()}
@@ -46,7 +47,7 @@ def simulate(name, seq):
                 elif members == f.CLUSTER:
                     keeper = (f.TAB if quiet else f.E) if f.TAB in (mate, cn) else (f.ALT if quiet else f.E)
                 elif members == f.CS:
-                    keeper = f.CAPS if quiet else f.S
+                    keeper = f.CAPS if (f.caps_on() or quiet) else f.S
                 elif members == f.EN:
                     keeper = f.ESC if quiet else f.N3
                 elif keep == "FIRST":
@@ -99,3 +100,5 @@ simulate("S4 E burst", [(3000, T, 1), (3060, T, 0), (3150, E, 1), (3150, TB, 1),
 simulate("S8 Caps uclusu", [(7000, SS, 1), (7000, C, 1), (7001, E, 1), (7100, SS, 0), (7100, C, 0), (7100, E, 0)])
 simulate("T14 Tab x2, 2sn once sohbet var", [(100000, A, 1), (100060, A, 0), (102000, E, 1), (102000, TB, 1), (102050, E, 0), (102050, TB, 0), (102250, E, 1), (102250, TB, 1), (102300, E, 0), (102300, TB, 0)])
 simulate("T15 E burst (harf yakin)", [(200000, A, 1), (200060, A, 0), (200150, E, 1), (200150, TB, 1), (200250, E, 0), (200250, TB, 0)])
+simulate("S13 Caps, LED acik + burst", [(30000, A, 1), (30060, A, 0), (30150, SS, 1), (30150, C, 1), (30250, SS, 0), (30250, C, 0)], caps_led=True)
+simulate("S14 S burst, LED kapali", [(31000, A, 1), (31060, A, 0), (31150, SS, 1), (31150, C, 1), (31250, SS, 0), (31250, C, 0)], caps_led=False)

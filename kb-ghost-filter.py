@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v7: 1a2c:95f6 matrix kisa-devre ghost filtresi.
+"""kb-ghost-filter v7.1: 1a2c:95f6 matrix kisa-devre ghost filtresi.
+v7 + CapsLock LED durumu: CS ciftinde LED aciksa kapatma niyeti (CAPS).
 v6'dan farklar:
 - sessizlik, ciftin kendi tuslari HARIC tutularak olculur (hizli art arda
   basislarda kendi aktiviten kirletmez; Tab-Tab, Caps-Caps duzelir)
@@ -33,6 +34,34 @@ GROUPS = [
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
 NAME = ecodes.KEY  # {kod:int -> isim:str}
 STATS = {"in": 0, "out": 0, "ghost": 0, "bounce": 0, "g3": 0}
+CAPS_LED = None  # v7.1: sanal cihaz capslock LED yolu (run basinda cozulur)
+
+def find_caps_led():
+    """Sanal klavyenin capslock LED sysfs yolu (X'in gercek CapsLock durumu)."""
+    try:
+        import os
+        import re
+        with open("/proc/bus/input/devices") as fh:
+            txt = fh.read()
+        for blk in txt.split("\n\n"):
+            if 'Name="kb-ghost-filter"' in blk:
+                m = re.search(r"Sysfs=(.*)", blk)
+                if m:
+                    nn = m.group(1).strip().split("/")[-1]
+                    p = f"/sys/class/leds/{nn}::capslock/brightness"
+                    if os.path.exists(p):
+                        return p
+    except Exception:
+        pass
+    return None
+
+def caps_on():
+    try:
+        if CAPS_LED and open(CAPS_LED).read().strip() == "1":
+            return True
+    except Exception:
+        pass
+    return False
 
 def group_of(a, b):
     for members, keep in GROUPS:
@@ -60,7 +89,9 @@ async def run():
     src = InputDevice(find_src())
     print(f"[filter] kaynak: {src.path} ({src.name})", flush=True)
     ui = UInput.from_device(src, name="kb-ghost-filter")
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v7", flush=True)
+    global CAPS_LED
+    CAPS_LED = find_caps_led()
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v7.1 led={CAPS_LED}", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
@@ -148,7 +179,10 @@ async def run():
                         else:
                             keeper = ALT if quiet else E
                     elif members == CS:
-                        keeper = CAPS if quiet else S
+                        if caps_on():
+                            keeper = CAPS  # CapsLock acik: kapatma niyeti
+                        else:
+                            keeper = CAPS if quiet else S
                     elif members == EN:
                         keeper = ESC if quiet else N3
                     elif keep == "FIRST":
