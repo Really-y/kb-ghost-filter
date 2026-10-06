@@ -1,33 +1,26 @@
 #!/usr/bin/env python3
-"""Filtre karar simulasyonu v7: cift-haric aktivite + SAMEKEY 8ms."""
+"""Filtre karar simulasyonu v10: CTRLALT tamponu + S/CAPS + Alt+Tab."""
 import importlib.util
-spec = importlib.util.spec_from_file_location("flt", "/tmp/kb-ghost-filter-v7.py")
+spec = importlib.util.spec_from_file_location("flt", "/tmp/kb-ghost-filter-v10.py")
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 
-def simulate(name, seq, caps_led=False):
-    f.caps_on = lambda: caps_led
-    W, SK, GAP, PG = f.WINDOW * 1000, f.SAMEKEY * 1000, f.GAP * 1000, f.POSTGHOST * 1000
+def simulate(name, seq):
+    W, SK, GAP, PG, CAW = f.WINDOW * 1000, f.SAMEKEY * 1000, f.GAP * 1000, f.POSTGHOST * 1000, f.CTRLALT * 1000
     pending, suppressed, held, last_up = {}, set(), set(), {}
     last_ghost = {"ts": -9999, "members": frozenset()}
-    post_ts, act, altbuf = -9999, {}, None
+    post_ts, act, cabuf = -9999, {}, None
     out = []
-    def expire(t):
-        for p, pt in list(pending.items()):
-            if t - pt >= W:
-                del pending[p]
-                out.append((t, p, 1))
-                held.add(p)
-    def alt_timer(t):
-        nonlocal altbuf
-        if altbuf and not altbuf.get("emitted") and t - altbuf["t0"] >= 300:
-            altbuf["emitted"] = True
-            out.append((t, f.ALT, 1))
-            held.add(f.ALT)
+    def ca_timeout(t):
+        nonlocal cabuf
+        if cabuf and t - cabuf["t0"] >= CAW:
+            out.append((t, f.CTRL, 1))
+            held.add(f.CTRL)
+            suppressed.add(f.ALT)
+            cabuf = None
     for t, cn, v in seq:
-        expire(t)
-        alt_timer(t)
         if v == 1:
+            ca_timeout(t)
             act[cn] = t
             if cn in suppressed:
                 continue
@@ -36,6 +29,16 @@ def simulate(name, seq, caps_led=False):
                 continue
             if cn in pending:
                 continue
+            if cabuf and cn not in (f.CTRL, f.ALT):
+                if cn in (f.TAB, f.E):
+                    out.append((t, f.ALT, 1))
+                    held.add(f.ALT)
+                    suppressed.add(f.CTRL)
+                else:
+                    out.append((t, f.CTRL, 1))
+                    held.add(f.CTRL)
+                    suppressed.add(f.ALT)
+                cabuf = None
             mate = next((p for p in pending if f.group_of(p, cn)), None)
             if mate is None and cn in f.WATCHED and (t - last_ghost["ts"]) < W and cn in last_ghost["members"]:
                 suppressed.add(cn)
@@ -47,25 +50,25 @@ def simulate(name, seq, caps_led=False):
                 continue
             if mate is not None:
                 members, keep = f.group_of(mate, cn)
+                if members == f.CA:
+                    del pending[mate]
+                    cabuf = {"t0": t}
+                    last_ghost = {"ts": t, "members": members}
+                    continue
                 others = [ts for k, ts in act.items() if k not in members]
                 quiet = (pending[mate] - (max(others) if others else -9999)) > GAP
                 if members == f.CLUSTER and f.ALT in held and f.TAB in (mate, cn):
                     keeper = f.TAB
-                elif members == f.CS and f.caps_on():
-                    keeper = f.CAPS
-                elif keep == "FIRST":
-                    keeper = mate
                 elif members == f.EN:
                     keeper = f.ESC if quiet else f.N3
+                elif keep == "FIRST":
+                    keeper = mate
                 else:
                     keeper = keep
                 drop = cn if keeper != cn else mate
                 del pending[mate]
                 out.append((t, keeper, 1))
-                if drop == f.ALT:
-                    altbuf = {"t0": t}
-                else:
-                    suppressed.add(drop)
+                suppressed.add(drop)
                 last_ghost = {"ts": t, "members": members}
                 post_ts = t
             else:
@@ -81,8 +84,8 @@ def simulate(name, seq, caps_led=False):
         else:
             last_up[cn] = t
             act[cn] = t
-            if cn == f.ALT and altbuf and not altbuf.get("emitted"):
-                altbuf = None
+            if cabuf and cn in (f.CTRL, f.ALT):
+                cabuf = None
                 out.append((t, f"{cn}(tap-dustu)", v))
                 continue
             if cn in pending:
@@ -101,21 +104,15 @@ def simulate(name, seq, caps_led=False):
 
 S = "KEY_LEFTSHIFT"; X = "KEY_X"; C = "KEY_CAPSLOCK"; SS = "KEY_S"
 CL = "KEY_LEFTCTRL"; AL = "KEY_LEFTALT"; E = "KEY_E"; TB = "KEY_TAB"
-ES = "KEY_ESC"; N3 = "KEY_3"; T = "KEY_T"; A = "KEY_A"
+ES = "KEY_ESC"; N3 = "KEY_3"; T = "KEY_T"; A = "KEY_A"; KC = "KEY_C"
 
-simulate("S1 S burst (A yakin)", [(0, A, 1), (60, A, 0), (150, SS, 1), (150, C, 1), (250, SS, 0), (250, C, 0)])
-simulate("S5 Tab yalniz", [(4000, E, 1), (4000, TB, 1), (4100, E, 0), (4100, TB, 0)])
-simulate("T11 hizli Tab x2 (200ms ara)", [(0, E, 1), (0, TB, 1), (50, E, 0), (50, TB, 0), (250, E, 1), (250, TB, 1), (300, E, 0), (300, TB, 0)])
-simulate("T12 hizli Caps x2", [(1000, SS, 1), (1000, C, 1), (1050, SS, 0), (1050, C, 0), (1250, SS, 1), (1250, C, 1), (1300, SS, 0), (1300, C, 0)])
-simulate("T13 hizli E cift vuruş (10ms)", [(2000, E, 1), (2030, E, 0), (2040, E, 1), (2070, E, 0)])
-simulate("S4 E burst", [(3000, T, 1), (3060, T, 0), (3150, E, 1), (3150, TB, 1), (3250, E, 0), (3250, TB, 0)])
-simulate("S8 Caps uclusu", [(7000, SS, 1), (7000, C, 1), (7001, E, 1), (7100, SS, 0), (7100, C, 0), (7100, E, 0)])
-simulate("T14 Tab x2, 2sn once sohbet var", [(100000, A, 1), (100060, A, 0), (102000, E, 1), (102000, TB, 1), (102050, E, 0), (102050, TB, 0), (102250, E, 1), (102250, TB, 1), (102300, E, 0), (102300, TB, 0)])
-simulate("T15 E burst (harf yakin)", [(200000, A, 1), (200060, A, 0), (200150, E, 1), (200150, TB, 1), (200250, E, 0), (200250, TB, 0)])
-simulate("S13 Caps, LED acik + burst", [(30000, A, 1), (30060, A, 0), (30150, SS, 1), (30150, C, 1), (30250, SS, 0), (30250, C, 0)], caps_led=True)
-simulate("S14 S burst, LED kapali", [(31000, A, 1), (31060, A, 0), (31150, SS, 1), (31150, C, 1), (31250, SS, 0), (31250, C, 0)], caps_led=False)
-simulate("T16 Alt tap (UP 100ms)", [(50000, CL, 1), (50000, AL, 1), (50100, CL, 0), (50100, AL, 0)])
-simulate("T17 Alt hold (UP 600ms)", [(51000, CL, 1), (51000, AL, 1), (51600, CL, 0), (51600, AL, 0)])
-simulate("T20 E yalniz (pause sonrasi)", [(70000, E, 1), (70000, TB, 1), (70100, E, 0), (70100, TB, 0)])
-simulate("T21 S yalniz (pause sonrasi)", [(71000, SS, 1), (71000, C, 1), (71100, SS, 0), (71100, C, 0)])
-simulate("T22 Alt tap E-first", [(72000, E, 1), (72000, AL, 1), (72100, E, 0), (72100, AL, 0)])
+simulate("A1 Alt+Tab (Tab 150ms)", [(0, CL, 1), (0, AL, 1), (150, E, 1), (150, TB, 1), (250, E, 0), (250, TB, 0), (300, CL, 0), (300, AL, 0)])
+simulate("A2 Ctrl+C (100ms)", [(1000, CL, 1), (1000, AL, 1), (1100, KC, 1), (1250, KC, 0), (1350, CL, 0), (1350, AL, 0)])
+simulate("A3 Ctrl tap yalniz", [(2000, CL, 1), (2000, AL, 1), (2100, CL, 0), (2100, AL, 0)])
+simulate("A4 Ctrl hold 600ms", [(3000, CL, 1), (3000, AL, 1), (3200, A, 1), (3300, A, 0), (3600, CL, 0), (3600, AL, 0)])
+simulate("A5 S basimi (S+CAPS)", [(4000, SS, 1), (4000, C, 1), (4100, SS, 0), (4100, C, 0)])
+simulate("A6 Caps basimi (S+CAPS)", [(5000, SS, 1), (5000, C, 1), (5100, SS, 0), (5100, C, 0)])
+simulate("A7 E yazim", [(6000, E, 1), (6000, TB, 1), (6100, E, 0), (6100, TB, 0)])
+simulate("A8 Tab yalniz", [(7000, E, 1), (7000, TB, 1), (7100, E, 0), (7100, TB, 0)])
+simulate("A9 ESC yalniz", [(8000, N3, 1), (8000, ES, 1), (8100, N3, 0), (8100, ES, 0)])
+simulate("A10 Shift", [(9000, S, 1), (9000, X, 1), (9100, S, 0), (9100, X, 0)])

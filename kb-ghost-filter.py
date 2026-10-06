@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v9: 1a2c:95f6 matrix kisa-devre ghost filtresi. SON SURUM.
+"""kb-ghost-filter v10: 1a2c:95f6 matrix kisa-devre ghost filtresi.
 
-Fiziksel gercek (8 surum boyunca olculdu): ayni cift farkli fiziksel tuslardan,
-degişken sırada geliyor. Yazilim iki ayrı tusu ayiramaz -> hangi kazanacaksa
-SABIT secilir. Bu surumde:
-- Yazim oncelikli: E her zaman E, S her zaman S (Tab/Caps fiziksel tuslari olu)
-- Alt+Tab gercek Alt+Tab tusuyla calisir (Alt basiliyken TAB korunur)
-- ESC: yalniz basimda ESC, rakam akisinda 3 (per-key sessizlik kurali)
-- SHIFT/X -> SHIFT, CTRL/ALT -> CTRL (+Alt-basili-tutma 300ms, 5sn otomatik birak)
-- YEDEK REMAP: RightCtrl -> Tab, Insert -> CapsLock (ikisi de temiz olculdu)
+v9 hatalari duzeltildi (kullanici dogruladi):
+1) CS cifti tablodan cikmistis -> Caps hayaleti gecip LED togluyordu (sS).
+   Cozum: {CAPS,S}->S sabit; CAPS tarafi bastirilir. CapsLock islevi:
+   Insert->CapsLock remap'i.
+2) Alt+Tab oluyordu: Alt basimi {CTRL,ALT} cifti atesliyor, CTRL kazaniyordu.
+   Cozum: CTRL/ALT cifti 300ms tamponlanir, emit YAPILMAZ; siradaki tusa bakilir:
+   - TAB/E gelirse -> kullanici ALT'ti -> ALT emit edilir, Alt+Tab calisir
+   - baska tus gelirse -> kullanici CTRL'di -> CTRL emit edilir (Ctrl+C calisir)
+   - 300ms bos gecerse -> CTRL emit (varsayilan, degisiklik yok)
+   - 300ms icinde UP gelirse -> tap, ikisi de dusurulur (sessiz)
 
-WINDOW=25ms, SAMEKEY=8ms, GAP=400ms (sadece ESC/3), POSTGHOST=8ms.
+Kurallar: {SHIFT,X}->SHIFT; {CAPS,S}->S; {E,TAB}->E (Alt basiliysa TAB);
+{ESC,3} sessiz->ESC/burst->3. REMAP: RightCtrl->Tab, Insert->CapsLock.
+WINDOW=25ms, SAMEKEY=8ms, GAP=400ms, POSTGHOST=8ms, CTRLALT=300ms.
 """
 import asyncio, time
 from evdev import InputDevice, UInput, ecodes
@@ -20,24 +24,26 @@ WINDOW = 0.025
 SAMEKEY = 0.008
 GAP = 0.400
 POSTGHOST = 0.008
-HOLDALT = 0.300
-IDLEALT = 5.0
+CTRLALT = 0.300
 SHIFT, X = "KEY_LEFTSHIFT", "KEY_X"
 CAPS, S = "KEY_CAPSLOCK", "KEY_S"
 CTRL, ALT = "KEY_LEFTCTRL", "KEY_LEFTALT"
 E, TAB = "KEY_E", "KEY_TAB"
 ESC, N3 = "KEY_ESC", "KEY_3"
 CLUSTER = frozenset((ALT, E, TAB))
+CA = frozenset((CTRL, ALT))
+CS = frozenset((CAPS, S))
 EN = frozenset((ESC, N3))
 GROUPS = [
     (frozenset((SHIFT, X)), SHIFT),
-    (frozenset((CTRL, ALT)), CTRL),
+    (CA, "CA"),
+    (CS, S),
     (CLUSTER, "FIRST"),
     (EN, "CTX"),
 ]
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
 NAME = ecodes.KEY  # {kod:int -> isim:str}
-REMAP = {  # temiz olculmus yedek tuslar -> olmus tuslarin islevi
+REMAP = {  # temiz olculmus yedek tuslar
     ecodes.KEY_RIGHTCTRL: ecodes.KEY_TAB,
     ecodes.KEY_INSERT: ecodes.KEY_CAPSLOCK,
 }
@@ -69,7 +75,7 @@ async def run():
     src = InputDevice(find_src())
     print(f"[filter] kaynak: {src.path} ({src.name})", flush=True)
     ui = UInput.from_device(src, name="kb-ghost-filter")
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v9", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v10", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
@@ -79,10 +85,10 @@ async def run():
     act = {}
     last_ghost = {"ts": 0.0, "members": frozenset()}
     post_ts = 0.0
-    altbuf = None
+    cabuf = None
 
     def w(code, value):
-        code = REMAP.get(code, code)  # yedek remap: RightCtrl->Tab, Insert->Caps
+        code = REMAP.get(code, code)
         ui.write(ecodes.EV_KEY, code, value)
         STATS["out"] += 1
 
@@ -110,29 +116,19 @@ async def run():
             print(f"[hb] in={STATS['in']} out={STATS['out']} ghost={STATS['ghost']} "
                   f"bounce={STATS['bounce']} g3={STATS['g3']} uzun-basililar={stuck}", flush=True)
 
-    async def alt_hold_timer(buf):
-        nonlocal altbuf
-        await asyncio.sleep(HOLDALT)
-        if altbuf is buf:
-            altbuf = None
-            w(buf["ev"].code, 1)
-            hold_add(ALT, buf["ev"])
+    async def ca_timeout(buf):
+        nonlocal cabuf
+        await asyncio.sleep(CTRLALT)
+        if cabuf is buf:
+            cabuf = None
+            w(buf["ctrl"].code, 1)  # varsayilan: CTRL
+            hold_add(CTRL, buf["ctrl"])
+            suppressed.add(ALT)     # ALT hic emit edilmedi -> UP'sunu ye
             ui.syn()
-            buf["emitted"] = True
-            buf["in0"] = STATS["in"]
-            buf["idle"] = asyncio.create_task(alt_idle_watch(buf))
-            print(f"[filter] GHOST ALT basili-tutma -> ALT iade", flush=True)
-
-    async def alt_idle_watch(buf):
-        await asyncio.sleep(IDLEALT)
-        if ALT in held and STATS["in"] == buf.get("in0", -1):
-            w(ecodes.KEY_LEFTALT, 0)
-            hold_drop(ALT)
-            ui.syn()
-            print(f"[filter] WATCH ALT 5sn sessiz -> otomatik birakma", flush=True)
+            print(f"[filter] CTRLALT zaman asimi -> CTRL", flush=True)
 
     async def main_loop():
-        nonlocal last_ghost, post_ts, altbuf
+        nonlocal last_ghost, post_ts, cabuf
         async for ev in src.async_read_loop():
             if ev.type != ecodes.EV_KEY:
                 if ev.type != ecodes.EV_SYN:
@@ -153,6 +149,22 @@ async def run():
                     continue
                 if cn in pending:
                     continue
+                if cabuf is not None and cn not in (CTRL, ALT):
+                    b = cabuf
+                    cabuf = None
+                    b["task"].cancel()
+                    if cn == TAB or cn == E:
+                        w(b["alt"].code, 1)   # kullanici ALT'ti -> Alt+Tab
+                        hold_add(ALT, b["alt"])
+                        suppressed.add(CTRL)   # CTRL hic emit edilmedi -> UP'sunu ye
+                        ui.syn()
+                        print(f"[filter] CTRLALT -> ALT (Tab/ E takip)", flush=True)
+                    else:
+                        w(b["ctrl"].code, 1)  # kullanici CTRL'di
+                        hold_add(CTRL, b["ctrl"])
+                        suppressed.add(ALT)
+                        ui.syn()
+                        print(f"[filter] CTRLALT -> CTRL ({cn} takip)", flush=True)
                 mate = None
                 for pcn in list(pending):
                     if group_of(pcn, cn):
@@ -170,16 +182,33 @@ async def run():
                     continue
                 if mate is not None:
                     members, keep = group_of(mate, cn)
+                    if members == CA:
+                        pend = pending.pop(mate)
+                        pend["task"].cancel()
+                        ctrl_ev = pend["ev"] if mate == CTRL else ev
+                        alt_ev = ev if cn == ALT else pend["ev"]
+                        if cabuf is not None:
+                            try:
+                                cabuf["task"].cancel()
+                            except Exception:
+                                pass
+                        b = {"ctrl": ctrl_ev, "alt": alt_ev, "task": None}
+                        b["task"] = asyncio.create_task(ca_timeout(b))
+                        cabuf = b
+                        last_ghost = {"ts": now, "members": members}
+                        STATS["ghost"] += 1
+                        print(f"[filter] CTRLALT tampon (300ms karar)", flush=True)
+                        continue
                     others = [ts for k, ts in act.items() if k not in members]
                     quiet = (pending[mate]["ts"] - (max(others) if others else -9999.0)) > GAP
                     if members == CLUSTER and ALT in held and TAB in (mate, cn):
-                        keeper = TAB   # Alt basili: gercek Alt+Tab kombinasyonu
+                        keeper = TAB   # Alt basili: Alt+Tab
                     elif members == EN:
                         keeper = ESC if quiet else N3
                     elif keep == "FIRST":
-                        keeper = mate  # E her zaman E kazanir (Tab fiziksel olu)
+                        keeper = mate  # E kazanir
                     else:
-                        keeper = keep  # SHIFT sabit
+                        keeper = keep  # SHIFT / S sabit
                     drop_other = cn if keeper != cn else mate
                     pend = pending.pop(mate)
                     pend["task"].cancel()
@@ -187,17 +216,7 @@ async def run():
                     w(kev.code, 1)
                     hold_add(keeper, kev if keeper == mate else ev)
                     ui.syn()
-                    if drop_other == ALT:
-                        if altbuf is not None:
-                            try:
-                                altbuf["task"].cancel()
-                            except Exception:
-                                pass
-                        b = {"ev": ev if cn == ALT else pend["ev"], "task": None, "emitted": False}
-                        b["task"] = asyncio.create_task(alt_hold_timer(b))
-                        altbuf = b
-                    else:
-                        suppressed.add(drop_other)
+                    suppressed.add(drop_other)
                     last_ghost = {"ts": now, "members": members}
                     post_ts = now
                     STATS["ghost"] += 1
@@ -218,11 +237,11 @@ async def run():
             elif ev.value == 0:  # UP
                 last_up[cn] = now
                 act[cn] = now
-                if cn == ALT and altbuf is not None and not altbuf.get("emitted", False):
-                    b = altbuf
-                    altbuf = None
+                if cabuf is not None and cn in (CTRL, ALT):
+                    b = cabuf
+                    cabuf = None
                     b["task"].cancel()
-                    print(f"[filter] GHOST ALT tap, ALT dustu", flush=True)
+                    print(f"[filter] CTRLALT tap -> ikisi dustu", flush=True)
                     continue
                 if cn in pending:
                     p = pending.pop(cn)
@@ -239,6 +258,8 @@ async def run():
                     ui.syn()
             else:  # REPEAT
                 if cn in suppressed or cn in pending:
+                    continue
+                if cabuf is not None and cn in (CTRL, ALT):
                     continue
                 w(ev.code, ev.value)
                 ui.syn()
