@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""kb-ghost-filter v7.2: Alt-basili-tutma (300ms) + 5sn otomatik birakma.
+"""kb-ghost-filter v8: sira-belirleyici keepers (E/TAB, S/CAPS, CTRL: FIRST);
+SHIFT sabit; EN sessiz->ESC/burst->3; Alt-held TAB; Alt-hold 300ms; LED kapatma.
 v7 + CapsLock LED durumu: CS ciftinde LED aciksa kapatma niyeti (CAPS).
 v6'dan farklar:
 - sessizlik, ciftin kendi tuslari HARIC tutularak olculur (hizli art arda
@@ -29,8 +30,8 @@ EN = frozenset((ESC, N3))
 GROUPS = [
     (frozenset((SHIFT, X)), SHIFT),
     (frozenset((CTRL, ALT)), "FIRST"),
-    (CS, "CTX"),
-    (CLUSTER, "CTX"),
+    (CS, "FIRST"),
+    (CLUSTER, "FIRST"),
     (EN, "CTX"),
 ]
 WATCHED = set().union(*[set(g[0]) for g in GROUPS])
@@ -93,7 +94,7 @@ async def run():
     ui = UInput.from_device(src, name="kb-ghost-filter")
     global CAPS_LED
     CAPS_LED = find_caps_led()
-    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v7.2 led={CAPS_LED}", flush=True)
+    print(f"[filter] sanal: {ui.device.path} WINDOW={WINDOW}s v8 led={CAPS_LED}", flush=True)
     src.grab()
     pending = {}
     suppressed = set()
@@ -197,22 +198,14 @@ async def run():
                     quiet = (pending[mate]["ts"] - (max(others) if others else -9999.0)) > GAP
                     if members == CLUSTER and ALT in held and TAB in (mate, cn):
                         keeper = TAB  # Alt basili: Alt+Tab kombosu
-                    elif members == CLUSTER:
-                        if TAB in (mate, cn):
-                            keeper = TAB if quiet else E
-                        else:
-                            keeper = ALT if quiet else E
-                    elif members == CS:
-                        if caps_on():
-                            keeper = CAPS  # CapsLock acik: kapatma niyeti
-                        else:
-                            keeper = CAPS if quiet else S
+                    elif members == CS and caps_on():
+                        keeper = CAPS  # CapsLock acik: kapatma niyeti
+                    elif keep == "FIRST":
+                        keeper = mate  # sira belirleyici: ilk gelen fiziksel
                     elif members == EN:
                         keeper = ESC if quiet else N3
-                    elif keep == "FIRST":
-                        keeper = mate
                     else:
-                        keeper = keep
+                        keeper = keep  # SHIFT sabit
                     drop_other = cn if keeper != cn else mate
                     pend = pending.pop(mate)
                     pend["task"].cancel()

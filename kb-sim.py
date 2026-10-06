@@ -51,14 +51,12 @@ def simulate(name, seq, caps_led=False):
                 quiet = (pending[mate] - (max(others) if others else -9999)) > GAP
                 if members == f.CLUSTER and f.ALT in held and f.TAB in (mate, cn):
                     keeper = f.TAB
-                elif members == f.CLUSTER:
-                    keeper = (f.TAB if quiet else f.E) if f.TAB in (mate, cn) else (f.ALT if quiet else f.E)
-                elif members == f.CS:
-                    keeper = f.CAPS if (f.caps_on() or quiet) else f.S
-                elif members == f.EN:
-                    keeper = f.ESC if quiet else f.N3
+                elif members == f.CS and f.caps_on():
+                    keeper = f.CAPS
                 elif keep == "FIRST":
                     keeper = mate
+                elif members == f.EN:
+                    keeper = f.ESC if quiet else f.N3
                 else:
                     keeper = keep
                 drop = cn if keeper != cn else mate
@@ -118,3 +116,6 @@ simulate("S13 Caps, LED acik + burst", [(30000, A, 1), (30060, A, 0), (30150, SS
 simulate("S14 S burst, LED kapali", [(31000, A, 1), (31060, A, 0), (31150, SS, 1), (31150, C, 1), (31250, SS, 0), (31250, C, 0)], caps_led=False)
 simulate("T16 Alt tap (UP 100ms)", [(50000, CL, 1), (50000, AL, 1), (50100, CL, 0), (50100, AL, 0)])
 simulate("T17 Alt hold (UP 600ms)", [(51000, CL, 1), (51000, AL, 1), (51600, CL, 0), (51600, AL, 0)])
+simulate("T20 E yalniz (pause sonrasi)", [(70000, E, 1), (70000, TB, 1), (70100, E, 0), (70100, TB, 0)])
+simulate("T21 S yalniz (pause sonrasi)", [(71000, SS, 1), (71000, C, 1), (71100, SS, 0), (71100, C, 0)])
+simulate("T22 Alt tap E-first", [(72000, E, 1), (72000, AL, 1), (72100, E, 0), (72100, AL, 0)])
